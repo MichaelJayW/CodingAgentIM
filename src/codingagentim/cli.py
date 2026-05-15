@@ -146,6 +146,112 @@ def dingtalk_listen(
         console.print("\n[yellow]Listener stopped[/yellow]")
 
 
+@dingtalk_app.command("bridge")
+def dingtalk_bridge(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging"),
+):
+    """Start DingTalk bridge mode (messages → inbox.json, outbox.json → DingTalk)."""
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    from codingagentim.providers.dingtalk import DingTalkProvider
+    from codingagentim.providers.dingtalk.listener import DingTalkListener
+
+    provider = DingTalkProvider()
+    listener = DingTalkListener(provider)
+
+    console.print("[bold green]Starting DingTalk bridge[/bold green]")
+    console.print("  Mode: inbox/outbox (messages processed by current Claude Code session)")
+    console.print("  Press Ctrl+C to stop\n")
+
+    try:
+        listener.start_bridge()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Bridge stopped[/yellow]")
+
+
+# --- Inbox commands ---
+
+inbox_app = typer.Typer(name="inbox", help="Inbox queue management (bridge mode)", no_args_is_help=True)
+app.add_typer(inbox_app, name="inbox")
+
+
+@inbox_app.command("check")
+def inbox_check(
+    format: str = typer.Option("raw", "--format", "-f", help="Output format: raw/json"),
+):
+    """Check pending messages in inbox (for bridge mode polling)."""
+    from codingagentim.core.message_queue import pending_count, _load, INBOX_FILE
+
+    items = _load(INBOX_FILE)
+    pending = [i for i in items if i["status"] == "pending"]
+
+    if format == "json":
+        fmt_output({"pending_count": len(pending), "messages": pending}, "json")
+        return
+
+    if not pending:
+        console.print("[dim]No pending messages[/dim]")
+        return
+
+    for msg in pending:
+        sender = msg.get("sender", "unknown")
+        text = msg.get("text", "")[:60]
+        console.print(f"[cyan]#{msg['id']}[/cyan] from [bold]{sender}[/bold]: {text}")
+    console.print(f"\n[bold]{len(pending)}[/bold] pending message(s)")
+
+
+@inbox_app.command("pop")
+def inbox_pop(
+    format: str = typer.Option("json", "--format", "-f", help="Output format"),
+):
+    """Pop the next pending message from inbox."""
+    from codingagentim.core.message_queue import pop_inbox
+
+    msg = pop_inbox()
+    if msg:
+        fmt_output(msg, format)
+    else:
+        console.print("[dim]No pending messages[/dim]")
+
+
+@inbox_app.command("done")
+def inbox_done(
+    msg_id: str = typer.Argument(..., help="Message ID to mark as done"),
+    result: str = typer.Option("", "--result", "-r", help="Result text to write to outbox"),
+    format: str = typer.Option("raw", "--format", "-f", help="Output format"),
+):
+    """Mark an inbox message as done and optionally write result to outbox."""
+    from codingagentim.core.message_queue import (
+        complete_inbox,
+        push_outbox,
+        _load,
+        INBOX_FILE,
+    )
+
+    items = _load(INBOX_FILE)
+    original = next((i for i in items if i["id"] == msg_id), None)
+    if not original:
+        console.print(f"[red]Message not found: {msg_id}[/red]")
+        raise typer.Exit(1)
+
+    complete_inbox(msg_id)
+
+    if result:
+        outbox_msg = push_outbox(
+            inbox_id=msg_id,
+            result=result,
+            conversation_id=original.get("conversation_id", ""),
+            is_group=original.get("is_group", True),
+            sender_id=original.get("sender_id", ""),
+        )
+        console.print(f"[green]Done #{msg_id} → outbox #{outbox_msg['id']}[/green]")
+    else:
+        console.print(f"[green]Done #{msg_id}[/green]")
+
+
 # --- Hook commands ---
 
 hook_app = typer.Typer(name="hook", help="Hook integration", no_args_is_help=True)

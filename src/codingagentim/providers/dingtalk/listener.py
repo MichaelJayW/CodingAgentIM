@@ -12,6 +12,11 @@ from rich.console import Console
 
 from codingagentim import config
 from codingagentim.core.dispatcher import AgentDispatcher
+from codingagentim.core.message_queue import (
+    complete_outbox,
+    pop_outbox,
+    push_inbox,
+)
 from codingagentim.core.models import Message
 
 if TYPE_CHECKING:
@@ -104,11 +109,61 @@ class BotMessageHandler(dingtalk_stream.ChatbotHandler):
         return "\n\n".join(parts)
 
 
+class BridgeMessageHandler(dingtalk_stream.ChatbotHandler):
+    """Bridge mode: writes messages to inbox.json instead of dispatching."""
+
+    def __init__(self, provider: DingTalkProvider):
+        super().__init__()
+        self.provider = provider
+
+    async def process(self, callback: dingtalk_stream.CallbackMessage):
+        incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+        text = (incoming.text.content or "").strip()
+
+        if not text:
+            return AckMessage.STATUS_OK, "OK"
+
+        sender = incoming.sender_nick or ""
+        sender_id = incoming.sender_staff_id or incoming.sender_id or ""
+        conversation_id = incoming.conversation_id or ""
+        is_group = incoming.conversation_type == "2"
+        chat_type = "群聊" if is_group else "单聊"
+
+        console.print(f"\n[bold cyan]━━━ Bridge 收到[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
+        logger.info("Bridge received %s from %s: %s", chat_type, sender, text[:100])
+
+        inbox_msg = push_inbox(
+            text=text,
+            sender=sender,
+            sender_id=sender_id,
+            conversation_id=conversation_id if is_group else "",
+            is_group=is_group,
+        )
+
+        console.print(f"[dim]  → inbox #{inbox_msg['id']}[/dim]")
+
+        msg = Message(
+            sender_id=sender_id,
+            sender_name=sender,
+            conversation_id=conversation_id if is_group else "",
+            content=text,
+            raw=callback.data,
+        )
+        try:
+            await self.provider.reply_message(
+                msg, f"⏳ 收到「{text[:20]}」，已加入队列，当前会话处理中...", msg_type="markdown",
+            )
+        except Exception as e:
+            logger.warning("Failed to send bridge ack: %s", e)
+
+        return AckMessage.STATUS_OK, "OK"
+
+
 class DingTalkListener:
     def __init__(
         self,
         provider: DingTalkProvider,
-        dispatcher: AgentDispatcher,
+        dispatcher: AgentDispatcher | None = None,
         app_key: str | None = None,
         app_secret: str | None = None,
     ):
@@ -129,3 +184,54 @@ class DingTalkListener:
 
         logger.info("Starting DingTalk stream listener...")
         client.start_forever()
+
+    def start_bridge(self) -> None:
+        """Start in bridge mode: inbox/outbox + outbox watcher."""
+        credential = dingtalk_stream.Credential(self._app_key, self._app_secret)
+        client = dingtalk_stream.DingTalkStreamClient(credential)
+
+        handler = BridgeMessageHandler(self.provider)
+        client.register_callback_handler(
+            dingtalk_stream.ChatbotMessage.TOPIC,
+            handler,
+        )
+
+        logger.info("Starting DingTalk bridge listener (inbox/outbox mode)...")
+
+        async def _run():
+            asyncio.create_task(self._outbox_watcher())
+            await client.start()
+
+        while True:
+            try:
+                asyncio.run(_run())
+            except KeyboardInterrupt:
+                break
+            import time
+            time.sleep(3)
+
+    async def _outbox_watcher(self, poll_interval: float = 2.0) -> None:
+        """Poll outbox.json and send results back to DingTalk."""
+        console.print("[dim]Outbox watcher started[/dim]")
+        while True:
+            try:
+                msg = pop_outbox()
+                if msg:
+                    console.print(f"[bold green]━━━ Outbox[/bold green] sending #{msg['id']} → {msg.get('conversation_id', 'user')}")
+                    try:
+                        if msg.get("is_group") and msg.get("conversation_id"):
+                            await self.provider.send_message(
+                                msg["conversation_id"], msg["result"], msg_type="markdown",
+                            )
+                        elif msg.get("sender_id"):
+                            await self.provider.send_to_user(
+                                [msg["sender_id"]], msg["result"], msg_type="markdown",
+                            )
+                        complete_outbox(msg["id"])
+                        console.print(f"[dim]  ✓ sent[/dim]")
+                    except Exception as e:
+                        logger.error("Failed to send outbox message: %s", e)
+                        console.print(f"[red]  ✗ send failed: {e}[/red]")
+            except Exception as e:
+                logger.error("Outbox watcher error: %s", e)
+            await asyncio.sleep(poll_interval)
