@@ -110,11 +110,13 @@ class BotMessageHandler(dingtalk_stream.ChatbotHandler):
 
 
 class BridgeMessageHandler(dingtalk_stream.ChatbotHandler):
-    """Bridge mode: writes messages to inbox.json instead of dispatching."""
+    """Bridge mode: resumes Claude Code session to process messages."""
 
-    def __init__(self, provider: DingTalkProvider):
+    def __init__(self, provider: DingTalkProvider, session_id: str = "", work_dir: str = "."):
         super().__init__()
         self.provider = provider
+        self.session_id = session_id
+        self.work_dir = work_dir
 
     async def process(self, callback: dingtalk_stream.CallbackMessage):
         incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
@@ -129,18 +131,8 @@ class BridgeMessageHandler(dingtalk_stream.ChatbotHandler):
         is_group = incoming.conversation_type == "2"
         chat_type = "群聊" if is_group else "单聊"
 
-        console.print(f"\n[bold cyan]━━━ Bridge 收到[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
-        logger.info("Bridge received %s from %s: %s", chat_type, sender, text[:100])
-
-        inbox_msg = push_inbox(
-            text=text,
-            sender=sender,
-            sender_id=sender_id,
-            conversation_id=conversation_id if is_group else "",
-            is_group=is_group,
-        )
-
-        console.print(f"[dim]  → inbox #{inbox_msg['id']}[/dim]")
+        console.print(f"\n[bold cyan]━━━ 收到消息[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
+        logger.info("Received %s from %s: %s", chat_type, sender, text[:100])
 
         msg = Message(
             sender_id=sender_id,
@@ -149,12 +141,51 @@ class BridgeMessageHandler(dingtalk_stream.ChatbotHandler):
             content=text,
             raw=callback.data,
         )
+
         try:
             await self.provider.reply_message(
-                msg, f"⏳ 收到「{text[:20]}」，已加入队列，当前会话处理中...", msg_type="markdown",
+                msg, f"⏳ 收到「{text[:20]}」，正在处理...", msg_type="markdown",
             )
         except Exception as e:
-            logger.warning("Failed to send bridge ack: %s", e)
+            logger.warning("Failed to send ack: %s", e)
+
+        prompt = f"[钉钉消息 from {sender}]: {text}"
+        console.print(f"[dim]  → claude --resume {self.session_id[:8]}... -p[/dim]")
+
+        try:
+            cmd = ["claude", "--resume", self.session_id, "--fork-session", "-p", prompt, "--output-format", "json"]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=self.work_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            output = stdout.decode()
+
+            import json as _json
+            try:
+                data = _json.loads(output.strip())
+                result_text = data.get("result", output[:1500])
+            except (ValueError, _json.JSONDecodeError):
+                result_text = output.strip()[:1500] if output.strip() else f"处理完成 (exit {proc.returncode})"
+
+            if proc.returncode != 0 and not result_text:
+                result_text = f"执行失败 (exit {proc.returncode})\n{stderr.decode()[:500]}"
+
+            console.print(f"[bold green]━━━ 完成[/bold green] exit={proc.returncode}")
+        except FileNotFoundError:
+            result_text = "Claude CLI 未找到，请确认已安装"
+            console.print(f"[bold red]━━━ 失败[/bold red] claude not found")
+
+        try:
+            await self.provider.reply_message(msg, result_text, msg_type="markdown")
+        except Exception as e:
+            logger.error("Failed to send result: %s", e)
+
+        # Also write to inbox/outbox for history tracking
+        push_inbox(text=text, sender=sender, sender_id=sender_id,
+                   conversation_id=conversation_id if is_group else "", is_group=is_group)
 
         return AckMessage.STATUS_OK, "OK"
 
@@ -185,30 +216,31 @@ class DingTalkListener:
         logger.info("Starting DingTalk stream listener...")
         client.start_forever()
 
-    def start_bridge(self) -> None:
-        """Start in bridge mode: inbox/outbox + outbox watcher."""
+    def start_bridge(self, session_id: str = "", work_dir: str = ".") -> None:
+        """Start in bridge mode: resume Claude Code session to process messages."""
+        if not session_id:
+            session_id = self._find_latest_session()
+
         credential = dingtalk_stream.Credential(self._app_key, self._app_secret)
         client = dingtalk_stream.DingTalkStreamClient(credential)
 
-        handler = BridgeMessageHandler(self.provider)
+        handler = BridgeMessageHandler(self.provider, session_id=session_id, work_dir=work_dir)
         client.register_callback_handler(
             dingtalk_stream.ChatbotMessage.TOPIC,
             handler,
         )
 
-        logger.info("Starting DingTalk bridge listener (inbox/outbox mode)...")
+        logger.info("Starting DingTalk bridge (session: %s...)", session_id[:8])
+        client.start_forever()
 
-        async def _run():
-            asyncio.create_task(self._outbox_watcher())
-            await client.start()
-
-        while True:
-            try:
-                asyncio.run(_run())
-            except KeyboardInterrupt:
-                break
-            import time
-            time.sleep(3)
+    @staticmethod
+    def _find_latest_session() -> str:
+        from pathlib import Path
+        session_dir = Path.home() / ".claude" / "projects"
+        jsonl_files = sorted(session_dir.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if jsonl_files:
+            return jsonl_files[0].stem
+        return ""
 
     async def _outbox_watcher(self, poll_interval: float = 2.0) -> None:
         """Poll outbox.json and send results back to DingTalk."""
@@ -217,7 +249,7 @@ class DingTalkListener:
             try:
                 msg = pop_outbox()
                 if msg:
-                    console.print(f"[bold green]━━━ Outbox[/bold green] sending #{msg['id']} → {msg.get('conversation_id', 'user')}")
+                    console.print(f"[bold green]━━━ 发送回复[/bold green]")
                     try:
                         if msg.get("is_group") and msg.get("conversation_id"):
                             await self.provider.send_message(

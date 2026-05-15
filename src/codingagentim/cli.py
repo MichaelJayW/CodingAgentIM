@@ -148,9 +148,11 @@ def dingtalk_listen(
 
 @dingtalk_app.command("bridge")
 def dingtalk_bridge(
+    session_id: str = typer.Option("", "--session", "-s", help="Claude Code session ID to resume"),
+    work_dir: str = typer.Option(".", "--work-dir", "-w", help="Working directory for Claude"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging"),
 ):
-    """Start DingTalk bridge mode (messages → inbox.json, outbox.json → DingTalk)."""
+    """Start DingTalk session mode (messages processed by current Claude Code session)."""
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
@@ -162,14 +164,16 @@ def dingtalk_bridge(
     provider = DingTalkProvider()
     listener = DingTalkListener(provider)
 
-    console.print("[bold green]Starting DingTalk bridge[/bold green]")
-    console.print("  Mode: inbox/outbox (messages processed by current Claude Code session)")
-    console.print("  Press Ctrl+C to stop\n")
+    sid_display = session_id[:8] + "..." if session_id else "auto-detect"
+    console.print("[bold green]DingTalk 已连接[/bold green]")
+    console.print(f"  Session: {sid_display}")
+    console.print(f"  Work dir: {work_dir}")
+    console.print("  Ctrl+C 停止\n")
 
     try:
-        listener.start_bridge()
+        listener.start_bridge(session_id=session_id, work_dir=work_dir)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Bridge stopped[/yellow]")
+        console.print("\n[yellow]已停止[/yellow]")
 
 
 # --- Inbox commands ---
