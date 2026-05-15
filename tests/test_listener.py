@@ -19,6 +19,7 @@ def mock_provider():
 @pytest.fixture
 def mock_dispatcher():
     dispatcher = MagicMock(spec=AgentDispatcher)
+    dispatcher.default_agent = "claude"
     dispatcher.dispatch = AsyncMock(
         return_value=AgentResult(
             exit_code=0,
@@ -59,7 +60,11 @@ async def test_process_dispatches_to_agent(mock_provider, mock_dispatcher):
         status, msg = await handler.process(callback)
 
     assert status == 200
-    mock_dispatcher.dispatch.assert_awaited_once_with("refactor auth module")
+    mock_dispatcher.dispatch.assert_awaited_once()
+    call_args = mock_dispatcher.dispatch.call_args
+    assert call_args[0][0] == "refactor auth module"
+    assert call_args[1]["sender"] == "test_user"
+    assert call_args[1]["conversation_id"] == "conv_789"
     assert mock_provider.reply_message.await_count == 2
 
 

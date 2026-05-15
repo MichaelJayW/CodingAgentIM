@@ -217,6 +217,103 @@ def mcp_serve():
     run_mcp_server()
 
 
+# --- Task commands ---
+
+task_app = typer.Typer(name="task", help="Task management", no_args_is_help=True)
+app.add_typer(task_app, name="task")
+
+
+@task_app.command("list")
+def task_list(
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter: running/completed/failed"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max results"),
+    format: str = typer.Option("table", "--format", "-f", help="Output format"),
+):
+    """List dispatched agent tasks."""
+    from codingagentim.core.task_store import list_tasks
+
+    tasks = list_tasks(status=status, limit=limit)
+    if not tasks:
+        console.print("[dim]No tasks found[/dim]")
+        return
+
+    if format == "json":
+        fmt_output([t.model_dump(mode="json") for t in tasks], "json")
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Agent Tasks")
+    table.add_column("ID", style="cyan", width=10)
+    table.add_column("Status", width=10)
+    table.add_column("Agent", width=8)
+    table.add_column("Sender", width=12)
+    table.add_column("Prompt", max_width=30)
+    table.add_column("Started", width=19)
+    table.add_column("Duration", width=10)
+
+    for t in reversed(tasks):
+        status_style = {"running": "yellow", "completed": "green", "failed": "red"}.get(t.status, "dim")
+        duration = ""
+        if t.start_time and t.end_time:
+            delta = t.end_time - t.start_time
+            duration = f"{delta.total_seconds():.1f}s"
+        elif t.start_time and t.status == "running":
+            duration = "..."
+
+        started = t.start_time.strftime("%Y-%m-%d %H:%M:%S") if t.start_time else ""
+        table.add_row(
+            t.id,
+            f"[{status_style}]{t.status}[/{status_style}]",
+            t.agent,
+            t.sender[:12],
+            t.prompt[:30],
+            started,
+            duration,
+        )
+    console.print(table)
+
+
+@task_app.command("show")
+def task_show(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    format: str = typer.Option("raw", "--format", "-f", help="Output format"),
+):
+    """Show task details."""
+    from codingagentim.core.task_store import get_task
+
+    task = get_task(task_id)
+    if not task:
+        console.print(f"[red]Task not found: {task_id}[/red]")
+        raise typer.Exit(1)
+
+    if format == "json":
+        fmt_output(task.model_dump(mode="json"), "json")
+        return
+
+    status_style = {"running": "yellow", "completed": "green", "failed": "red"}.get(task.status, "dim")
+    console.print(f"[bold]Task {task.id}[/bold]  [{status_style}]{task.status}[/{status_style}]")
+    console.print(f"  Agent:    {task.agent}")
+    console.print(f"  Sender:   {task.sender}")
+    console.print(f"  Prompt:   {task.prompt}")
+    if task.start_time:
+        console.print(f"  Started:  {task.start_time}")
+    if task.end_time:
+        console.print(f"  Ended:    {task.end_time}")
+    console.print(f"  Exit:     {task.exit_code}")
+    if task.summary:
+        console.print(f"\n[bold]Summary:[/bold]\n{task.summary}")
+
+
+@task_app.command("clean")
+def task_clean():
+    """Remove completed and failed tasks."""
+    from codingagentim.core.task_store import clean_tasks
+
+    removed = clean_tasks()
+    console.print(f"[green]Cleaned {removed} task(s)[/green]")
+
+
 # --- Top-level commands ---
 
 @app.command("schema")

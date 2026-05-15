@@ -59,3 +59,23 @@ class AgentResult(BaseModel):
     stderr: str = ""
     agent: str = ""
     summary: str = ""
+
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TaskRecord(BaseModel):
+    id: str = ""
+    prompt: str = ""
+    status: TaskStatus = TaskStatus.PENDING
+    agent: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    summary: str = ""
+    exit_code: int = 0
+    sender: str = ""
+    conversation_id: str = ""
