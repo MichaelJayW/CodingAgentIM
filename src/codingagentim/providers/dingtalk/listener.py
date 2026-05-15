@@ -12,7 +12,6 @@ from rich.console import Console
 
 from codingagentim import config
 from codingagentim.core.dispatcher import AgentDispatcher
-from codingagentim.core.message_queue import push_inbox
 from codingagentim.core.models import Message
 
 if TYPE_CHECKING:
