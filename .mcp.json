@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codingagentim": {
+      "command": "codingagentim",
+      "args": ["mcp", "serve"],
+      "env": {
+        "CODINGAGENTIM_DEFAULT_PROVIDER": "dingtalk"
+      }
+    }
+  }
+}

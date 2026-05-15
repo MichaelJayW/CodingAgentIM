@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "on_complete": {
+      "command": "codingagentim hook notify gemini task_complete"
+    }
+  }
+}

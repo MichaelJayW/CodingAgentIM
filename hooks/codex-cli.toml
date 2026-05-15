@@ -1,0 +1,3 @@
+[[hooks]]
+event = "on_agent_turn_end"
+command = ["codingagentim", "hook", "notify", "codex", "task_complete"]

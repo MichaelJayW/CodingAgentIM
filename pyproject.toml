@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codingagentim"
+version = "0.1.0"
+description = "CodingAgentIM — IM x AI Coding Agent bidirectional bridge"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "MichaelJayW" }]
+keywords = ["dingtalk", "im", "ai", "coding-agent", "cli", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "typer>=0.9.0",
+    "httpx>=0.25.0",
+    "dingtalk-stream>=0.16.0",
+    "rich>=13.0.0",
+    "tomli>=2.0.0;python_version<'3.11'",
+    "tomli-w>=1.0.0",
+    "keyring>=24.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-mock>=3.0",
+    "ruff>=0.1.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+codingagentim = "codingagentim.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/MichaelJayW/CodingAgentIM"
+Repository = "https://github.com/MichaelJayW/CodingAgentIM"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codingagentim"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

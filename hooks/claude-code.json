@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codingagentim hook notify claude-code task_complete"
+          }
+        ]
+      }
+    ]
+  }
+}
