@@ -62,11 +62,13 @@ class BotMessageHandler(dingtalk_stream.ChatbotHandler):
 
         async def on_progress(line: str) -> None:
             nonlocal progress_count
+            if progress_count >= 3:
+                return
             progress_count += 1
             snippet = line[:60] + ("..." if len(line) > 60 else "")
             try:
                 await self.provider.reply_message(
-                    msg, f"🔄 进度 #{progress_count}：{snippet}", msg_type="markdown",
+                    msg, f"🔄 {snippet}", msg_type="markdown",
                 )
             except Exception as e:
                 logger.warning("Failed to send progress: %s", e)
@@ -211,7 +213,7 @@ class BridgeMessageHandler(dingtalk_stream.ChatbotHandler):
                     if part.get("type") == "text":
                         snippet = part["text"][:60]
                         now = time.monotonic()
-                        if now - last_progress_time >= 6.0 and snippet.strip():
+                        if now - last_progress_time >= 15.0 and snippet.strip() and progress_count < 3:
                             last_progress_time = now
                             progress_count += 1
                             try:
