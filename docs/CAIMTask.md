@@ -55,10 +55,10 @@
 
 ## 验证
 
-- [ ] 手动验证: CLI 正向发送钉钉消息
-- [ ] 手动验证: listen 反向接收 @机器人 消息并调度 coding agent
-- [ ] 手动验证: MCP Server 被 AI 工具识别
-- [ ] 手动验证: Hook 自动通知
+- [ ] 手动验证: CLI 正向发送钉钉消息（需要真实钉钉凭证）
+- [ ] 手动验证: listen 反向接收 @机器人 消息并调度 coding agent（需要真实钉钉凭证）
+- [x] 手动验证: MCP Server 被 AI 工具识别（initialize + tools/list 均正常）
+- [x] 手动验证: Hook 自动通知（adapters 正常工作，notify 入口正常）
 
 
 updateAtTime: 2026/5/15 11:23:46
