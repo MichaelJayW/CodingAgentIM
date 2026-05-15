@@ -55,8 +55,8 @@
 
 ## 验证
 
-- [ ] 手动验证: CLI 正向发送钉钉消息（需要真实钉钉凭证）
-- [ ] 手动验证: listen 反向接收 @机器人 消息并调度 coding agent（需要真实钉钉凭证）
+- [x] 手动验证: CLI 正向发送钉钉消息（通过 listen 回复验证，groupMessages/send 200 OK）
+- [x] 手动验证: listen 反向接收 @机器人 消息并调度 coding agent（收到王宁 "cc"，回复成功）
 - [x] 手动验证: MCP Server 被 AI 工具识别（initialize + tools/list 均正常）
 - [x] 手动验证: Hook 自动通知（adapters 正常工作，notify 入口正常）
 
