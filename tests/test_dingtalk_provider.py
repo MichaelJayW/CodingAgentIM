@@ -75,19 +75,18 @@ async def test_api_get(api):
     mock_resp.raise_for_status = MagicMock()
     mock_resp.status_code = 200
 
-    with patch.object(api, "_get_token", return_value="fake_token"):
-        with patch("httpx.AsyncClient") as MockClient:
-            client_instance = AsyncMock()
-            client_instance.request.return_value = mock_resp
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_client = AsyncMock()
+    mock_client.request.return_value = mock_resp
 
+    with patch.object(api, "_get_token", new_callable=AsyncMock, return_value="fake_token"):
+        with patch.object(api, "_get_client", return_value=mock_client):
             result = await api.get("/v1.0/test")
             assert result == {"result": "ok"}
-            client_instance.request.assert_awaited_once()
-            call_args = client_instance.request.call_args
-            assert call_args[0][0] == "GET"
-            assert "api.dingtalk.com" in call_args[0][1]
+            mock_client.request.assert_awaited_once()
+            call_args = mock_client.request.call_args
+            assert call_args[1]["method"] if "method" in call_args[1] else call_args[0][0] == "GET"
+            url = call_args[1].get("url") or call_args[0][1]
+            assert "api.dingtalk.com" in url
 
 
 @pytest.mark.asyncio
@@ -97,17 +96,15 @@ async def test_api_post_old_api(api):
     mock_resp.raise_for_status = MagicMock()
     mock_resp.status_code = 200
 
-    with patch.object(api, "_get_token", return_value="fake_token"):
-        with patch("httpx.AsyncClient") as MockClient:
-            client_instance = AsyncMock()
-            client_instance.request.return_value = mock_resp
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_client = AsyncMock()
+    mock_client.request.return_value = mock_resp
 
+    with patch.object(api, "_get_token", new_callable=AsyncMock, return_value="fake_token"):
+        with patch.object(api, "_get_client", return_value=mock_client):
             result = await api.post("/some/path", json={"a": 1}, use_old_api=True)
             assert result == {"success": True}
-            call_args = client_instance.request.call_args
-            assert "oapi.dingtalk.com" in call_args[0][1]
+            url = mock_client.request.call_args[0][1]
+            assert "oapi.dingtalk.com" in url
 
 
 @pytest.mark.asyncio
@@ -116,13 +113,11 @@ async def test_api_204_returns_empty(api):
     mock_resp.raise_for_status = MagicMock()
     mock_resp.status_code = 204
 
-    with patch.object(api, "_get_token", return_value="fake_token"):
-        with patch("httpx.AsyncClient") as MockClient:
-            client_instance = AsyncMock()
-            client_instance.request.return_value = mock_resp
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=client_instance)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_client = AsyncMock()
+    mock_client.request.return_value = mock_resp
 
+    with patch.object(api, "_get_token", new_callable=AsyncMock, return_value="fake_token"):
+        with patch.object(api, "_get_client", return_value=mock_client):
             result = await api.request("DELETE", "/v1.0/resource/1")
             assert result == {}
 

@@ -2,241 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import dingtalk_stream
-from dingtalk_stream import AckMessage
-from rich.console import Console
 
 from codingagentim import config
-from codingagentim.core.dispatcher import AgentDispatcher
-from codingagentim.core.models import Message
+from codingagentim.providers.dingtalk.handlers import (
+    APIBridgeMessageHandler,
+    BotMessageHandler,
+    BridgeMessageHandler,
+    InboxMessageHandler,
+)
 
 if TYPE_CHECKING:
+    from codingagentim.core.dispatcher import AgentDispatcher
     from codingagentim.providers.dingtalk.provider import DingTalkProvider
 
+
 logger = logging.getLogger(__name__)
-console = Console()
-
-
-class BotMessageHandler(dingtalk_stream.ChatbotHandler):
-    def __init__(self, provider: DingTalkProvider, dispatcher: AgentDispatcher):
-        super().__init__()
-        self.provider = provider
-        self.dispatcher = dispatcher
-
-    async def process(self, callback: dingtalk_stream.CallbackMessage):
-        incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
-        text = (incoming.text.content or "").strip()
-
-        if not text:
-            return AckMessage.STATUS_OK, "OK"
-
-        sender = incoming.sender_nick or ""
-        conversation_id = incoming.conversation_id or ""
-        is_group = incoming.conversation_type == "2"
-        chat_type = "群聊" if is_group else "单聊"
-
-        console.print(f"\n[bold cyan]━━━ 收到消息[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
-        console.print(f"[dim]  Dispatching to {self.dispatcher.default_agent}...[/dim]")
-        logger.info("Received %s message from %s: %s", chat_type, sender, text[:100])
-
-        msg = Message(
-            sender_id=incoming.sender_staff_id or incoming.sender_id,
-            sender_name=sender,
-            conversation_id=conversation_id if is_group else "",
-            content=text,
-            raw=callback.data,
-        )
-
-        try:
-            await self.provider.reply_message(
-                msg, f"⏳ 收到「{text[:20]}」，正在处理...", msg_type="markdown",
-            )
-        except Exception as e:
-            logger.warning("Failed to send ack reply: %s", e)
-
-        progress_count = 0
-
-        async def on_progress(line: str) -> None:
-            nonlocal progress_count
-            if progress_count >= 3:
-                return
-            progress_count += 1
-            snippet = line[:60] + ("..." if len(line) > 60 else "")
-            try:
-                await self.provider.reply_message(
-                    msg, f"🔄 {snippet}", msg_type="markdown",
-                )
-            except Exception as e:
-                logger.warning("Failed to send progress: %s", e)
-
-        def on_output(line: str) -> None:
-            console.print(f"[dim]│[/dim] {line}", end="", highlight=False)
-
-        result = await self.dispatcher.dispatch(
-            text,
-            on_output=on_output,
-            on_progress=on_progress,
-            sender=sender,
-            conversation_id=conversation_id,
-        )
-
-        status_style = "green" if result.exit_code == 0 else "red"
-        console.print(f"[bold {status_style}]━━━ 完成[/bold {status_style}] exit={result.exit_code}")
-
-        reply = self._format_result_markdown(text, result)
-        try:
-            await self.provider.reply_message(msg, reply, msg_type="markdown")
-        except Exception as e:
-            logger.error("Failed to send result reply: %s", e)
-
-        return AckMessage.STATUS_OK, "OK"
-
-    @staticmethod
-    def _format_result_markdown(prompt: str, result) -> str:
-        status = "✅ 完成" if result.exit_code == 0 else "❌ 失败"
-        parts = [f"### {status}"]
-        parts.append(f"**任务**: {prompt[:50]}")
-        parts.append(f"**Agent**: {result.agent}")
-        if result.summary:
-            parts.append(f"\n{result.summary[:1500]}")
-        return "\n\n".join(parts)
-
-
-class BridgeMessageHandler(dingtalk_stream.ChatbotHandler):
-    """Bridge mode: resumes Claude Code session to process messages."""
-
-    def __init__(self, provider: DingTalkProvider, session_id: str = "", work_dir: str = "."):
-        super().__init__()
-        self.provider = provider
-        self.session_id = session_id
-        self.work_dir = work_dir
-        self._user_sessions: dict[str, str] = {}
-
-    async def process(self, callback: dingtalk_stream.CallbackMessage):
-        incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
-        text = (incoming.text.content or "").strip()
-
-        if not text:
-            return AckMessage.STATUS_OK, "OK"
-
-        sender = incoming.sender_nick or ""
-        sender_id = incoming.sender_staff_id or incoming.sender_id or ""
-        conversation_id = incoming.conversation_id or ""
-        is_group = incoming.conversation_type == "2"
-        chat_type = "群聊" if is_group else "单聊"
-        user_key = conversation_id if is_group else sender_id
-
-        console.print(f"\n[bold cyan]━━━ 收到消息[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
-        logger.info("Received %s from %s: %s", chat_type, sender, text[:100])
-
-        msg = Message(
-            sender_id=sender_id,
-            sender_name=sender,
-            conversation_id=conversation_id if is_group else "",
-            content=text,
-            raw=callback.data,
-        )
-
-        try:
-            await self.provider.reply_message(
-                msg, f"⏳ 收到，正在处理...", msg_type="markdown",
-            )
-        except Exception as e:
-            logger.warning("Failed to send ack: %s", e)
-
-        # Continuous conversation: resume user's previous fork, or fork from main
-        resume_id = self._user_sessions.get(user_key, self.session_id)
-        is_followup = user_key in self._user_sessions
-        prompt = f"[钉钉{chat_type} from {sender}]: {text}"
-
-        if is_followup:
-            cmd = ["claude", "--resume", resume_id, "--permission-mode", "auto",
-                   "--verbose", "-p", prompt, "--output-format", "stream-json"]
-            console.print(f"[dim]  → 继续对话 {resume_id[:8]}...[/dim]")
-        else:
-            cmd = ["claude", "--resume", self.session_id, "--fork-session",
-                   "--permission-mode", "auto", "--verbose", "-p", prompt, "--output-format", "stream-json"]
-            console.print(f"[dim]  → 新对话 fork from {self.session_id[:8]}...[/dim]")
-
-        try:
-            result_text, new_session_id = await self._run_claude_streaming(cmd, msg)
-            if new_session_id:
-                self._user_sessions[user_key] = new_session_id
-            console.print(f"[bold green]━━━ 完成[/bold green]")
-        except FileNotFoundError:
-            result_text = "Claude CLI 未找到"
-            console.print(f"[bold red]━━━ 失败[/bold red]")
-
-        try:
-            await self.provider.reply_message(msg, result_text, msg_type="markdown")
-        except Exception as e:
-            logger.error("Failed to send result: %s", e)
-
-        return AckMessage.STATUS_OK, "OK"
-
-    async def _run_claude_streaming(self, cmd: list[str], msg: Message) -> tuple[str, str]:
-        """Run claude with stream-json, send progress to DingTalk, return (result, session_id)."""
-        import json as _json
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=self.work_dir,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-
-        result_text = ""
-        session_id = ""
-        last_progress_time = 0.0
-        progress_count = 0
-        import time
-
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            try:
-                event = _json.loads(line.decode().strip())
-            except (ValueError, _json.JSONDecodeError):
-                continue
-
-            etype = event.get("type", "")
-
-            if etype == "system" and event.get("session_id"):
-                session_id = event["session_id"]
-
-            elif etype == "assistant" and "message" in event:
-                content_parts = event["message"].get("content", [])
-                for part in content_parts:
-                    if part.get("type") == "text":
-                        snippet = part["text"][:60]
-                        now = time.monotonic()
-                        if now - last_progress_time >= 15.0 and snippet.strip() and progress_count < 3:
-                            last_progress_time = now
-                            progress_count += 1
-                            try:
-                                await self.provider.reply_message(
-                                    msg, f"🔄 {snippet}...", msg_type="markdown",
-                                )
-                            except Exception:
-                                pass
-
-            elif etype == "result":
-                result_text = event.get("result", "")
-                if not session_id:
-                    session_id = event.get("session_id", "")
-
-        stderr = (await proc.stderr.read()).decode()
-        await proc.wait()
-
-        if not result_text and proc.returncode != 0:
-            result_text = f"执行失败\n{stderr[:500]}"
-        elif not result_text:
-            result_text = "处理完成"
-
-        return result_text, session_id
 
 
 class DingTalkListener:
@@ -251,43 +36,89 @@ class DingTalkListener:
         self.dispatcher = dispatcher
         self._app_key = app_key or config.get("dingtalk.app_key", "")
         self._app_secret = app_secret or config.get("dingtalk.app_secret", "")
+        self._client = None
+
+    def _setup_signal_handlers(self) -> None:
+        import signal
+
+        def _shutdown(signum, frame):
+            logger.info("Received signal %s, shutting down gracefully...", signum)
+            if self._client:
+                try:
+                    self._client.stop()
+                except Exception:
+                    pass
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGTERM, _shutdown)
+        signal.signal(signal.SIGINT, _shutdown)
 
     def start(self) -> None:
+        self._setup_signal_handlers()
         credential = dingtalk_stream.Credential(self._app_key, self._app_secret)
-        client = dingtalk_stream.DingTalkStreamClient(credential)
+        self._client = dingtalk_stream.DingTalkStreamClient(credential)
 
         handler = BotMessageHandler(self.provider, self.dispatcher)
-        client.register_callback_handler(
+        self._client.register_callback_handler(
             dingtalk_stream.ChatbotMessage.TOPIC,
             handler,
         )
 
         logger.info("Starting DingTalk stream listener...")
-        client.start_forever()
+        self._client.start_forever()
 
     def start_bridge(self, session_id: str = "", work_dir: str = ".") -> None:
         """Start in bridge mode: resume Claude Code session to process messages."""
+        self._setup_signal_handlers()
         if not session_id:
             session_id = self._find_latest_session()
 
         credential = dingtalk_stream.Credential(self._app_key, self._app_secret)
-        client = dingtalk_stream.DingTalkStreamClient(credential)
+        self._client = dingtalk_stream.DingTalkStreamClient(credential)
 
         handler = BridgeMessageHandler(self.provider, session_id=session_id, work_dir=work_dir)
-        client.register_callback_handler(
+        self._client.register_callback_handler(
             dingtalk_stream.ChatbotMessage.TOPIC,
             handler,
         )
 
         logger.info("Starting DingTalk bridge (session: %s...)", session_id[:8])
-        client.start_forever()
+        self._client.start_forever()
+
+    def start_inbox(self) -> None:
+        """Start in inbox mode: queue messages for the active Claude session."""
+        self._setup_signal_handlers()
+        credential = dingtalk_stream.Credential(self._app_key, self._app_secret)
+        self._client = dingtalk_stream.DingTalkStreamClient(credential)
+
+        handler = InboxMessageHandler(self.provider)
+        self._client.register_callback_handler(
+            dingtalk_stream.ChatbotMessage.TOPIC,
+            handler,
+        )
+
+        logger.info("Starting DingTalk inbox mode (messages queued for active session)")
+        self._client.start_forever()
+
+    def start_api(self, model: str = "", system_prompt: str = "") -> None:
+        """Start in direct API mode: fastest response using Anthropic SDK."""
+        self._setup_signal_handlers()
+        credential = dingtalk_stream.Credential(self._app_key, self._app_secret)
+        self._client = dingtalk_stream.DingTalkStreamClient(credential)
+
+        handler = APIBridgeMessageHandler(self.provider, model=model, system_prompt=system_prompt)
+        self._client.register_callback_handler(
+            dingtalk_stream.ChatbotMessage.TOPIC,
+            handler,
+        )
+
+        logger.info("Starting DingTalk API mode (model: %s)", model or "env default")
+        self._client.start_forever()
 
     @staticmethod
     def _find_latest_session() -> str:
-        from pathlib import Path
         session_dir = Path.home() / ".claude" / "projects"
         jsonl_files = sorted(session_dir.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
         if jsonl_files:
             return jsonl_files[0].stem
         return ""
-

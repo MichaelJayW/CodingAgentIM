@@ -15,6 +15,25 @@ from codingagentim.providers.dingtalk.services.contact import ContactService
 from codingagentim.providers.dingtalk.services.todo import TodoService
 
 
+MAX_MSG_LENGTH = 4000
+
+
+def _split_message(content: str, max_len: int = MAX_MSG_LENGTH) -> list[str]:
+    if len(content) <= max_len:
+        return [content]
+    chunks = []
+    while content:
+        if len(content) <= max_len:
+            chunks.append(content)
+            break
+        split_at = content.rfind("\n", 0, max_len)
+        if split_at <= 0:
+            split_at = max_len
+        chunks.append(content[:split_at])
+        content = content[split_at:].lstrip("\n")
+    return chunks
+
+
 @register("dingtalk")
 class DingTalkProvider(BaseProvider):
     name = "dingtalk"
@@ -57,11 +76,17 @@ class DingTalkProvider(BaseProvider):
     async def reply_message(
         self, original: Message, content: str, msg_type: str = "text"
     ) -> Message:
-        if original.conversation_id:
-            return await self.send_message(original.conversation_id, content, msg_type)
-        if original.sender_id:
-            return await self.send_to_user([original.sender_id], content, msg_type)
-        raise ValueError("Cannot reply: no conversation_id or sender_id in original message")
+        if not original.conversation_id and not original.sender_id:
+            raise ValueError("Cannot reply: no conversation_id or sender_id in original message")
+
+        chunks = _split_message(content)
+        last_result = None
+        for chunk in chunks:
+            if original.conversation_id:
+                last_result = await self.send_message(original.conversation_id, chunk, msg_type)
+            else:
+                last_result = await self.send_to_user([original.sender_id], chunk, msg_type)
+        return last_result
 
     async def search_contact(self, query: str, limit: int = 10) -> list[Contact]:
         return await self._contact.search(query, limit)

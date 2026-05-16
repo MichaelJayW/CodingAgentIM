@@ -150,9 +150,11 @@ def dingtalk_listen(
 def dingtalk_bridge(
     session_id: str = typer.Option("", "--session", "-s", help="Claude Code session ID to resume"),
     work_dir: str = typer.Option(".", "--work-dir", "-w", help="Working directory for Claude"),
+    mode: str = typer.Option("cli", "--mode", "-m", help="Mode: api (direct Anthropic API) or cli (claude subprocess)"),
+    model: str = typer.Option("", "--model", help="Model override for API mode"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose logging"),
 ):
-    """Start DingTalk session mode (messages processed by current Claude Code session)."""
+    """Start DingTalk bridge (messages processed by AI agent)."""
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
@@ -164,16 +166,32 @@ def dingtalk_bridge(
     provider = DingTalkProvider()
     listener = DingTalkListener(provider)
 
-    sid_display = session_id[:8] + "..." if session_id else "auto-detect"
-    console.print("[bold green]DingTalk 已连接[/bold green]")
-    console.print(f"  Session: {sid_display}")
-    console.print(f"  Work dir: {work_dir}")
-    console.print("  Ctrl+C 停止\n")
-
-    try:
-        listener.start_bridge(session_id=session_id, work_dir=work_dir)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]已停止[/yellow]")
+    if mode == "api":
+        console.print("[bold green]DingTalk API 模式已连接[/bold green]")
+        console.print(f"  Model: {model or 'env default'}")
+        console.print("  Ctrl+C 停止\n")
+        try:
+            listener.start_api(model=model)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]已停止[/yellow]")
+    elif mode == "inbox":
+        console.print("[bold green]DingTalk Inbox 模式已连接[/bold green]")
+        console.print("  消息将写入 inbox 队列，由当前 Claude 会话处理")
+        console.print("  Ctrl+C 停止\n")
+        try:
+            listener.start_inbox()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]已停止[/yellow]")
+    else:
+        sid_display = session_id[:8] + "..." if session_id else "auto-detect"
+        console.print("[bold green]DingTalk CLI 模式已连接[/bold green]")
+        console.print(f"  Session: {sid_display}")
+        console.print(f"  Work dir: {work_dir}")
+        console.print("  Ctrl+C 停止\n")
+        try:
+            listener.start_bridge(session_id=session_id, work_dir=work_dir)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]已停止[/yellow]")
 
 
 # --- Inbox commands ---
@@ -313,6 +331,101 @@ def auth_status():
     console.print(f"DingTalk: {status}")
 
 
+# --- Daemon commands ---
+
+daemon_app = typer.Typer(name="daemon", help="Bridge daemon management (launchd)", no_args_is_help=True)
+app.add_typer(daemon_app, name="daemon")
+
+
+@daemon_app.command("install")
+def daemon_install(
+    mode: str = typer.Option("api", "--mode", "-m", help="Bridge mode: api or cli"),
+    model: str = typer.Option("", "--model", help="Model override for API mode"),
+    work_dir: str = typer.Option("", "--work-dir", "-w", help="Working directory"),
+):
+    """Install bridge as a launchd daemon (auto-start + auto-restart)."""
+    from codingagentim.daemon import install
+
+    plist_path = install(mode=mode, model=model, work_dir=work_dir)
+    console.print(f"[green]Daemon installed[/green]: {plist_path}")
+    console.print("  Bridge will auto-start on login and restart on crash.")
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall(
+    clean_logs: bool = typer.Option(False, "--clean-logs", help="Also remove log files"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Remove bridge daemon and stop the process."""
+    from codingagentim.daemon import uninstall, is_loaded
+
+    if not is_loaded():
+        console.print("[dim]Daemon not installed[/dim]")
+        return
+
+    if not yes:
+        confirm = typer.confirm("Uninstall bridge daemon? This will stop the running bridge.")
+        if not confirm:
+            raise typer.Abort()
+
+    result = uninstall(clean_logs=clean_logs)
+
+    if result["bootout"]:
+        console.print("[green]✓[/green] launchd service removed")
+    if result["plist_removed"]:
+        console.print("[green]✓[/green] plist deleted")
+    if result["killed"]:
+        console.print(f"[green]✓[/green] killed remaining process(es): {result['killed']}")
+    if result["logs_removed"]:
+        console.print(f"[green]✓[/green] logs cleaned: {', '.join(result['logs_removed'])}")
+
+    console.print("[yellow]Daemon uninstalled[/yellow]")
+
+
+@daemon_app.command("status")
+def daemon_status():
+    """Show bridge daemon status."""
+    from codingagentim.daemon import get_status, is_loaded, PLIST_PATH
+
+    if not is_loaded():
+        console.print("[dim]Daemon not installed[/dim]")
+        return
+
+    info = get_status()
+    pid = info.get("pid")
+    exit_code = info.get("exit_code")
+
+    if pid:
+        console.print(f"[green]Running[/green]  PID={pid}")
+    else:
+        console.print(f"[yellow]Loaded but not running[/yellow]  exit={exit_code}")
+    console.print(f"  Plist: {PLIST_PATH}")
+
+
+@daemon_app.command("restart")
+def daemon_restart():
+    """Restart bridge daemon."""
+    from codingagentim.daemon import restart, is_loaded
+
+    if not is_loaded():
+        console.print("[red]Daemon not installed. Run 'daemon install' first.[/red]")
+        raise typer.Exit(1)
+
+    restart()
+    console.print("[green]Daemon restarted[/green]")
+
+
+@daemon_app.command("logs")
+def daemon_logs(
+    follow: bool = typer.Option(True, "--follow/--no-follow", "-f", help="Follow log output"),
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+):
+    """Tail bridge daemon logs."""
+    from codingagentim.daemon import tail_logs
+
+    tail_logs(follow=follow, lines=lines)
+
+
 # --- MCP commands ---
 
 mcp_app = typer.Typer(name="mcp", help="MCP server", no_args_is_help=True)
@@ -422,6 +535,30 @@ def task_clean():
 
     removed = clean_tasks()
     console.print(f"[green]Cleaned {removed} task(s)[/green]")
+
+
+# --- Init command ---
+
+@app.command("init")
+def init_cmd(
+    project_dir: str = typer.Option(".", "--dir", "-d", help="Project directory to initialize"),
+    mode: str = typer.Option("cli", "--mode", "-m", help="Bridge mode: api or cli"),
+    model: str = typer.Option("", "--model", help="Model override for API mode"),
+    skip_daemon: bool = typer.Option(False, "--skip-daemon", help="Skip daemon installation"),
+    skip_auth: bool = typer.Option(False, "--skip-auth", help="Skip credential setup"),
+):
+    """One-command setup: credentials + CLAUDE.md + daemon."""
+    from pathlib import Path
+    from codingagentim.setup import run_init
+
+    run_init(
+        project_dir=Path(project_dir).resolve(),
+        mode=mode,
+        model=model,
+        skip_daemon=skip_daemon,
+        skip_auth=skip_auth,
+        console=console,
+    )
 
 
 # --- Top-level commands ---

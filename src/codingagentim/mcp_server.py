@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
+from pathlib import Path
 from typing import Any
+
+_HOME = Path.home()
+_NOTIF_FILE = _HOME / ".codingagentim" / "notifications.jsonl"
+_OFFSET_FILE = _HOME / ".codingagentim" / ".notif_mcp_offset"
+_LOG_FILE = _HOME / ".codingagentim" / "bridge.err.log"
+_LABEL = "com.codingagentim.bridge"
 
 
 async def handle_request(request: dict) -> dict:
@@ -55,6 +63,32 @@ async def handle_request(request: dict) -> dict:
 
 def _get_tools() -> list[dict]:
     return [
+        {
+            "name": "check_notifications",
+            "description": (
+                "检查钉钉 bridge 新通知。返回自上次检查以来的新消息列表"
+                "（received/completed/failed），自动更新已读偏移。"
+                "无新通知时返回空列表。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "get_bridge_status",
+            "description": "获取钉钉 bridge daemon 运行状态和最近活动日志。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "log_lines": {
+                        "type": "integer",
+                        "description": "返回最近几行日志（默认 10）",
+                        "default": 10,
+                    },
+                },
+            },
+        },
         {
             "name": "dingtalk_send_message",
             "description": "Send a message to a DingTalk group or user",
@@ -109,10 +143,123 @@ def _get_tools() -> list[dict]:
                 },
             },
         },
+        {
+            "name": "reply_dingtalk",
+            "description": (
+                "回复钉钉用户消息。用于在完成任务后将结果发送给发消息的用户。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sender_id": {
+                        "type": "string",
+                        "description": "用户 ID（从 check_notifications 返回的 sender_id 字段获取）",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "回复内容",
+                    },
+                    "msg_type": {
+                        "type": "string",
+                        "enum": ["text", "markdown"],
+                        "default": "markdown",
+                    },
+                },
+                "required": ["sender_id", "content"],
+            },
+        },
     ]
 
 
+def _check_notifications() -> list[dict]:
+    if not _NOTIF_FILE.exists():
+        return []
+
+    try:
+        size = _NOTIF_FILE.stat().st_size
+    except OSError:
+        return []
+
+    offset = 0
+    try:
+        offset = int(_OFFSET_FILE.read_text().strip())
+    except (OSError, ValueError):
+        pass
+
+    if size <= offset:
+        return []
+
+    if offset > size:
+        offset = 0
+
+    try:
+        with open(_NOTIF_FILE, "rb") as f:
+            f.seek(offset)
+            new_data = f.read().decode("utf-8").strip()
+    except OSError:
+        return []
+
+    if not new_data:
+        return []
+
+    try:
+        _OFFSET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _OFFSET_FILE.write_text(str(size))
+    except OSError:
+        pass
+
+    notifications = []
+    for line in new_data.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            notifications.append(json.loads(line))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return notifications
+
+
+def _get_bridge_status(log_lines: int = 10) -> dict:
+    status: dict[str, Any] = {"running": False, "pid": None, "recent_log": []}
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{_get_uid()}/{_LABEL}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            status["running"] = "state = running" in result.stdout
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("pid ="):
+                    status["pid"] = int(line.split("=")[1].strip())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+
+    if _LOG_FILE.exists():
+        try:
+            lines = _LOG_FILE.read_text().strip().splitlines()
+            status["recent_log"] = lines[-log_lines:]
+        except OSError:
+            pass
+
+    return status
+
+
+def _get_uid() -> int:
+    import os
+    return os.getuid()
+
+
 async def _call_tool(name: str, arguments: dict) -> Any:
+    if name == "check_notifications":
+        return _check_notifications()
+
+    if name == "get_bridge_status":
+        return _get_bridge_status(arguments.get("log_lines", 10))
+
     from codingagentim.providers.dingtalk import DingTalkProvider
 
     provider = DingTalkProvider()
@@ -140,6 +287,14 @@ async def _call_tool(name: str, arguments: dict) -> Any:
     if name == "dingtalk_list_calendar":
         events = await provider.list_calendar_events(arguments.get("date"))
         return [e.model_dump(mode="json") for e in events]
+
+    if name == "reply_dingtalk":
+        result = await provider.send_to_user(
+            user_ids=[arguments["sender_id"]],
+            content=arguments["content"],
+            msg_type=arguments.get("msg_type", "markdown"),
+        )
+        return result.model_dump(mode="json")
 
     return {"error": f"Unknown tool: {name}"}
 

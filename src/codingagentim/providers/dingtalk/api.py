@@ -16,6 +16,12 @@ class DingTalkAPI:
     def __init__(self, app_key: str | None = None, app_secret: str | None = None):
         self._app_key = app_key
         self._app_secret = app_secret
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        return self._client
 
     async def _get_token(self) -> str:
         return await get_access_token(self._app_key, self._app_secret)
@@ -38,19 +44,18 @@ class DingTalkAPI:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.request(
-                method,
-                url,
-                headers=headers,
-                json=json,
-                params=params,
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            if resp.status_code == 204:
-                return {}
-            return resp.json()
+        client = self._get_client()
+        resp = await client.request(
+            method,
+            url,
+            headers=headers,
+            json=json,
+            params=params,
+        )
+        resp.raise_for_status()
+        if resp.status_code == 204:
+            return {}
+        return resp.json()
 
     async def get(self, path: str, **kwargs) -> dict[str, Any]:
         return await self.request("GET", path, **kwargs)

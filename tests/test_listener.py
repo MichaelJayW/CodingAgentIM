@@ -6,7 +6,7 @@ import pytest
 
 from codingagentim.core.dispatcher import AgentDispatcher
 from codingagentim.core.models import AgentResult
-from codingagentim.providers.dingtalk.listener import BotMessageHandler
+from codingagentim.providers.dingtalk.handlers import BotMessageHandler
 
 
 @pytest.fixture

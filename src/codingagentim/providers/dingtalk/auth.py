@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -11,6 +12,14 @@ from codingagentim import config
 DINGTALK_TOKEN_URL = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
 
 _token_cache: dict[str, tuple[str, float]] = {}
+_token_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _token_lock
+    if _token_lock is None:
+        _token_lock = asyncio.Lock()
+    return _token_lock
 
 
 async def get_access_token(app_key: str | None = None, app_secret: str | None = None) -> str:
@@ -29,15 +38,21 @@ async def get_access_token(app_key: str | None = None, app_secret: str | None = 
         if time.time() < expires_at - 60:
             return token
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            DINGTALK_TOKEN_URL,
-            json={"appKey": app_key, "appSecret": app_secret},
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    async with _get_lock():
+        if cache_key in _token_cache:
+            token, expires_at = _token_cache[cache_key]
+            if time.time() < expires_at - 60:
+                return token
 
-    token = data["accessToken"]
-    expires_in = data.get("expireIn", 7200)
-    _token_cache[cache_key] = (token, time.time() + expires_in)
-    return token
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                DINGTALK_TOKEN_URL,
+                json={"appKey": app_key, "appSecret": app_secret},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        token = data["accessToken"]
+        expires_in = data.get("expireIn", 7200)
+        _token_cache[cache_key] = (token, time.time() + expires_in)
+        return token
