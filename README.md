@@ -39,14 +39,20 @@
 | `正常` | 收到确认 + 最终结果 |
 | `静默` | 只发最终结果 |
 
-## 安装（一条命令）
+## 前置准备
+
+1. 去[钉钉开放平台](https://open-dev.dingtalk.com/)创建一个企业内部应用
+2. 开启「机器人」能力，获取 AppKey 和 AppSecret
+3. 在机器人配置中选择 Stream 模式（无需公网 IP）
+
+## 安装
 
 ```bash
 pip install codingagentim
 codingagentim init
 ```
 
-按提示配好钉钉 key 就行。之后开机自启，不用管。
+按提示填入 AppKey / AppSecret，自动安装守护进程。之后开机自启，不用管。
 
 ## 当前支持
 

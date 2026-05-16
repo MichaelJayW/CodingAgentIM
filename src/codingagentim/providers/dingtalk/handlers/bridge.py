@@ -98,6 +98,11 @@ class BridgeMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
             result_text = "Claude CLI 未找到"
             console.print(f"[bold red]━━━ 失败[/bold red]")
             push_notification(sender, text, ntype="failed", chat=chat_type, result=result_text)
+        except OSError as e:
+            result_text = f"执行异常: {e}"
+            console.print(f"[bold red]━━━ 失败[/bold red]")
+            logger.error("Subprocess OS error: %s", e)
+            push_notification(sender, text, ntype="failed", chat=chat_type, result=result_text)
 
         try:
             reply = result_text.rstrip() + "\n\n---\n*Powered by CodingAgentIM*"
@@ -107,6 +112,8 @@ class BridgeMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
 
         return AckMessage.STATUS_OK, "OK"
 
+    SUBPROCESS_TIMEOUT = 300  # 5 minutes
+
     async def _run_claude_streaming(self, cmd: list[str], msg: Message) -> tuple[str, str]:
         """Run claude with stream-json, send progress to DingTalk, return (result, session_id)."""
         proc = await asyncio.create_subprocess_exec(
@@ -114,6 +121,23 @@ class BridgeMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
 
+        result_text = ""
+        session_id = ""
+
+        try:
+            result_text, session_id = await asyncio.wait_for(
+                self._read_claude_output(proc), timeout=self.SUBPROCESS_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Claude subprocess timed out after %ds", self.SUBPROCESS_TIMEOUT)
+            proc.kill()
+            await proc.wait()
+            result_text = f"⏰ 执行超时（{self.SUBPROCESS_TIMEOUT}秒），已终止"
+
+        return result_text, session_id
+
+    async def _read_claude_output(self, proc: asyncio.subprocess.Process) -> tuple[str, str]:
+        """Read stream-json output from claude subprocess."""
         result_text = ""
         session_id = ""
 
@@ -130,7 +154,6 @@ class BridgeMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
 
             if etype == "system" and event.get("session_id"):
                 session_id = event["session_id"]
-
             elif etype == "result":
                 result_text = event.get("result", "")
                 if not session_id:
