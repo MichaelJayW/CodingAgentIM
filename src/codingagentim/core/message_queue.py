@@ -12,6 +12,8 @@ from codingagentim.config import ensure_config_dir
 INBOX_FILE = Path.home() / ".codingagentim" / "inbox.json"
 OUTBOX_FILE = Path.home() / ".codingagentim" / "outbox.json"
 
+_PROCESSING_TIMEOUT_SECONDS = 600  # 10 minutes
+
 
 def _load(path: Path) -> list[dict]:
     if path.exists():
@@ -52,9 +54,22 @@ def push_inbox(
 
 def pop_inbox() -> dict | None:
     items = _load(INBOX_FILE)
+    now = datetime.now()
+    changed = False
+    for item in items:
+        if item["status"] == "processing":
+            started = datetime.fromisoformat(item.get("processing_started", item["timestamp"]))
+            if (now - started).total_seconds() > _PROCESSING_TIMEOUT_SECONDS:
+                item["status"] = "pending"
+                item.pop("processing_started", None)
+                changed = True
+    if changed:
+        _save(INBOX_FILE, items)
+
     for item in items:
         if item["status"] == "pending":
             item["status"] = "processing"
+            item["processing_started"] = now.isoformat()
             _save(INBOX_FILE, items)
             return item
     return None
@@ -111,3 +126,17 @@ def complete_outbox(msg_id: str) -> None:
 
 def pending_count() -> int:
     return sum(1 for item in _load(INBOX_FILE) if item["status"] == "pending")
+
+
+def cleanup(max_done: int = 50) -> int:
+    """Remove old done/sent messages, keeping at most max_done recent ones. Returns count removed."""
+    removed = 0
+    for path, done_status in [(INBOX_FILE, "done"), (OUTBOX_FILE, "sent")]:
+        items = _load(path)
+        done = [i for i in items if i["status"] == done_status]
+        if len(done) > max_done:
+            drop_ids = {d["id"] for d in done[:-max_done]}
+            new_items = [i for i in items if i["id"] not in drop_ids]
+            removed += len(items) - len(new_items)
+            _save(path, new_items)
+    return removed

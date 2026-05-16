@@ -9,6 +9,17 @@ from codingagentim.providers.dingtalk.handlers.base import find_claude_bin
 from codingagentim.providers.dingtalk.handlers.bridge import BridgeMessageHandler
 
 
+@pytest.fixture(autouse=True)
+def _no_notifications(monkeypatch):
+    noop = lambda *a, **kw: None
+    monkeypatch.setattr(
+        "codingagentim.providers.dingtalk.handlers.base.push_notification", noop,
+    )
+    monkeypatch.setattr(
+        "codingagentim.providers.dingtalk.handlers.bridge.push_notification", noop,
+    )
+
+
 @pytest.fixture
 def mock_provider():
     provider = MagicMock()
