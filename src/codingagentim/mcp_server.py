@@ -45,7 +45,18 @@ async def handle_request(request: dict) -> dict:
         params = request.get("params", {})
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
-        result = await _call_tool(tool_name, arguments)
+        try:
+            result = await _call_tool(tool_name, arguments)
+        except Exception as e:
+            sys.stderr.write(f"Tool call error ({tool_name}): {e}\n")
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"error": str(e)}, ensure_ascii=False)}],
+                    "isError": True,
+                },
+            }
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -249,11 +260,10 @@ def _check_notifications() -> list[dict]:
     except (OSError, ValueError):
         pass
 
-    if size <= offset:
-        return []
-
-    if offset > size:
+    if size < offset:
         offset = 0
+    elif size == offset:
+        return []
 
     try:
         with open(_NOTIF_FILE, "rb") as f:

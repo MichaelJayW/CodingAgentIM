@@ -118,7 +118,10 @@ class DingTalkListener:
     @staticmethod
     def _find_latest_session() -> str:
         session_dir = Path.home() / ".claude" / "projects"
-        jsonl_files = sorted(session_dir.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+        try:
+            jsonl_files = sorted(session_dir.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+        except (FileNotFoundError, OSError):
+            return ""
         if jsonl_files:
             return jsonl_files[0].stem
         return ""

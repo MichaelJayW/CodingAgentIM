@@ -56,3 +56,10 @@ async def get_access_token(app_key: str | None = None, app_secret: str | None = 
         expires_in = data.get("expireIn", 7200)
         _token_cache[cache_key] = (token, time.time() + expires_in)
         return token
+
+
+def invalidate_token(app_key: str | None = None, app_secret: str | None = None) -> None:
+    app_key = app_key or config.get("dingtalk.app_key", "")
+    app_secret = app_secret or config.get("dingtalk.app_secret", "")
+    cache_key = f"{app_key}:{app_secret}"
+    _token_cache.pop(cache_key, None)

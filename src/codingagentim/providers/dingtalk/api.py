@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from codingagentim.providers.dingtalk.auth import get_access_token
+from codingagentim.providers.dingtalk.auth import get_access_token, invalidate_token
 
 BASE_URL = "https://api.dingtalk.com"
 OLD_BASE_URL = "https://oapi.dingtalk.com"
@@ -22,6 +22,11 @@ class DingTalkAPI:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
+
+    async def close(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     async def _get_token(self) -> str:
         return await get_access_token(self._app_key, self._app_secret)
@@ -52,6 +57,13 @@ class DingTalkAPI:
             json=json,
             params=params,
         )
+
+        if resp.status_code == 401:
+            invalidate_token(self._app_key, self._app_secret)
+            token = await self._get_token()
+            headers["x-acs-dingtalk-access-token"] = token
+            resp = await client.request(method, url, headers=headers, json=json, params=params)
+
         resp.raise_for_status()
         if resp.status_code == 204:
             return {}
