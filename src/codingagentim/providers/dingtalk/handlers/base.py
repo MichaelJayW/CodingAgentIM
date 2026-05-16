@@ -92,6 +92,26 @@ def save_conversations(conversations: dict[str, list[dict]]) -> None:
 
 
 _NOTIF_FILE = Path.home() / ".codingagentim" / "notifications.jsonl"
+_NOTIF_MAX_SIZE = 512 * 1024  # 512 KB — rotate when exceeded
+_NOTIF_KEEP_LINES = 200       # keep last N lines after rotation
+
+
+def _rotate_notifications() -> None:
+    """Rotate notifications.jsonl when it exceeds _NOTIF_MAX_SIZE."""
+    try:
+        if not _NOTIF_FILE.exists() or _NOTIF_FILE.stat().st_size <= _NOTIF_MAX_SIZE:
+            return
+        lines = _NOTIF_FILE.read_text().strip().splitlines()
+        kept = lines[-_NOTIF_KEEP_LINES:]
+        _NOTIF_FILE.write_text("\n".join(kept) + "\n")
+        offset_file = _NOTIF_FILE.parent / ".poll_offset"
+        if offset_file.exists():
+            offset_file.write_text("0")
+        mcp_offset = _NOTIF_FILE.parent / ".notif_mcp_offset"
+        if mcp_offset.exists():
+            mcp_offset.write_text("0")
+    except OSError:
+        pass
 
 
 def push_notification(
@@ -117,3 +137,4 @@ def push_notification(
             f.write(entry + "\n")
     except OSError:
         pass
+    _rotate_notifications()
