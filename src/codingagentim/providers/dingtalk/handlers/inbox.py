@@ -19,6 +19,9 @@ from codingagentim.providers.dingtalk.handlers.base import (
 if TYPE_CHECKING:
     from codingagentim.providers.dingtalk.provider import DingTalkProvider
 
+_LEVEL_COMMANDS = {"/verbose": "verbose", "/normal": "normal", "/quiet": "quiet",
+                   "话痨": "verbose", "正常": "normal", "静默": "quiet"}
+
 
 class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
     """Inbox mode: queues messages for the human-facing Claude session to pick up."""
@@ -43,6 +46,28 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
         is_group = incoming.conversation_type == "2"
         chat_type = "群聊" if is_group else "单聊"
 
+        msg = Message(
+            sender_id=sender_id,
+            sender_name=sender,
+            conversation_id=conversation_id if is_group else "",
+            content=text,
+            raw=callback.data,
+        )
+
+        if text.lower() in _LEVEL_COMMANDS or text in _LEVEL_COMMANDS:
+            level = _LEVEL_COMMANDS.get(text.lower()) or _LEVEL_COMMANDS[text]
+            from codingagentim.config import set_reply_level
+            set_reply_level(level)
+            labels = {"verbose": "话痨", "normal": "正常", "quiet": "静默"}
+            try:
+                await self.provider.reply_message(
+                    msg, f"已切换为【{labels[level]}】模式", msg_type="text",
+                )
+            except Exception:
+                pass
+            logger.info("Reply level changed to %s by %s", level, sender)
+            return AckMessage.STATUS_OK, "OK"
+
         console.print(f"\n[bold cyan]━━━ 收到消息[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
         logger.info("Inbox: %s from %s: %s", chat_type, sender, text[:100])
 
@@ -58,20 +83,15 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
             sender, text, ntype="received", chat=chat_type, sender_id=sender_id,
         )
 
-        msg = Message(
-            sender_id=sender_id,
-            sender_name=sender,
-            conversation_id=conversation_id if is_group else "",
-            content=text,
-            raw=callback.data,
-        )
+        from codingagentim.config import get_reply_level
+        level = get_reply_level()
 
-        try:
-            await self.provider.reply_message(
-                msg, "📥 收到，已加入待办队列", msg_type="markdown",
-            )
-        except Exception as e:
-            logger.warning("Failed to send ack: %s", e)
+        if level in ("verbose", "normal"):
+            ack_text = "📥 收到，Coding Agent 正在处理，稍等～" if level == "verbose" else "👌 收到，Coding Agent 处理中"
+            try:
+                await self.provider.reply_message(msg, ack_text, msg_type="text")
+            except Exception as e:
+                logger.warning("Failed to send ack: %s", e)
 
         console.print(f"[bold green]━━━ 已入队[/bold green]")
         return AckMessage.STATUS_OK, "OK"

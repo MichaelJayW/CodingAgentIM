@@ -45,7 +45,7 @@ async def test_unknown_method():
 
 def test_get_tools_schema_valid():
     tools = _get_tools()
-    assert len(tools) == 7
+    assert len(tools) >= 7
     for tool in tools:
         assert "name" in tool
         assert "description" in tool

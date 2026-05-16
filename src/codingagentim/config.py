@@ -16,10 +16,13 @@ import tomli_w
 CONFIG_DIR = Path.home() / ".codingagentim"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
+REPLY_LEVELS = ("verbose", "normal", "quiet")
+
 _defaults: dict[str, Any] = {
     "default_provider": "dingtalk",
     "default_agent": "claude",
     "output_format": "table",
+    "reply_level": "normal",
     "dingtalk": {
         "app_key": "",
         "app_secret": "",
@@ -27,6 +30,18 @@ _defaults: dict[str, Any] = {
         "robot_code": "",
     },
 }
+
+
+def get_reply_level() -> str:
+    return get("reply_level", "normal")
+
+
+def set_reply_level(level: str) -> None:
+    if level not in REPLY_LEVELS:
+        raise ValueError(f"Invalid reply level: {level}. Must be one of {REPLY_LEVELS}")
+    cfg = load_config()
+    cfg["reply_level"] = level
+    save_config(cfg)
 
 
 def ensure_config_dir() -> Path:

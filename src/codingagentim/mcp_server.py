@@ -68,11 +68,63 @@ def _get_tools() -> list[dict]:
             "description": (
                 "检查钉钉 bridge 新通知。返回自上次检查以来的新消息列表"
                 "（received/completed/failed），自动更新已读偏移。"
-                "无新通知时返回空列表。"
+                "无新通知时返回空列表，此时不要向用户输出任何内容。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+        {
+            "name": "poll_notifications",
+            "description": (
+                "长轮询钉钉通知。阻塞等待直到有新通知或超时。"
+                "支持秒级响应，适合替代分钟级 cron。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "timeout": {
+                        "type": "integer",
+                        "description": "最长等待秒数（默认 30）",
+                        "default": 30,
+                    },
+                    "interval": {
+                        "type": "integer",
+                        "description": "检查间隔秒数（默认 5）",
+                        "default": 5,
+                    },
+                },
+            },
+        },
+        {
+            "name": "get_reply_level",
+            "description": (
+                "获取当前钉钉回复级别。verbose=话痨（发关键中间进展+结果），"
+                "normal=正常（收到+结果），quiet=静默（只发最终结果）。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
+            "name": "set_reply_level",
+            "description": (
+                "设置钉钉回复级别。verbose=话痨（发关键中间进展+结果），"
+                "normal=正常（收到+结果），quiet=静默（只发最终结果）。"
+                "也可以通过钉钉发 /verbose /normal /quiet 修改。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "level": {
+                        "type": "string",
+                        "enum": ["verbose", "normal", "quiet"],
+                        "description": "回复级别",
+                    },
+                },
+                "required": ["level"],
             },
         },
         {
@@ -171,6 +223,17 @@ def _get_tools() -> list[dict]:
     ]
 
 
+async def _poll_notifications(timeout: int = 30, interval: int = 5) -> list[dict]:
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        notifs = _check_notifications()
+        if notifs:
+            return notifs
+        await asyncio.sleep(interval)
+    return []
+
+
 def _check_notifications() -> list[dict]:
     if not _NOTIF_FILE.exists():
         return []
@@ -256,6 +319,21 @@ def _get_uid() -> int:
 async def _call_tool(name: str, arguments: dict) -> Any:
     if name == "check_notifications":
         return _check_notifications()
+
+    if name == "poll_notifications":
+        return await _poll_notifications(
+            timeout=arguments.get("timeout", 30),
+            interval=arguments.get("interval", 5),
+        )
+
+    if name == "get_reply_level":
+        from codingagentim.config import get_reply_level
+        return {"level": get_reply_level()}
+
+    if name == "set_reply_level":
+        from codingagentim.config import set_reply_level, get_reply_level
+        set_reply_level(arguments["level"])
+        return {"level": get_reply_level(), "status": "ok"}
 
     if name == "get_bridge_status":
         return _get_bridge_status(arguments.get("log_lines", 10))
