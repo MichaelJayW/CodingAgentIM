@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import dingtalk_stream
 
 from codingagentim import config
+from codingagentim.core.message_queue import pop_outbox, complete_outbox
 from codingagentim.providers.dingtalk.handlers import (
     APIBridgeMessageHandler,
     BotMessageHandler,
@@ -97,8 +101,54 @@ class DingTalkListener:
             handler,
         )
 
+        self._start_outbox_consumer()
+
         logger.info("Starting DingTalk inbox mode (messages queued for active session)")
         self._client.start_forever()
+
+    def _start_outbox_consumer(self) -> None:
+        """Start a background thread that polls outbox and sends messages via DingTalk API."""
+        def _consume():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            while True:
+                try:
+                    msg = pop_outbox()
+                    if msg is None:
+                        time.sleep(3)
+                        continue
+                    loop.run_until_complete(self._send_outbox_message(msg))
+                    complete_outbox(msg["id"])
+                    logger.info("Outbox sent: %s → %s", msg["id"], msg.get("sender_id", "")[:8])
+                except Exception as e:
+                    logger.warning("Outbox consumer error: %s", e)
+                    time.sleep(5)
+
+        t = threading.Thread(target=_consume, daemon=True, name="outbox-consumer")
+        t.start()
+        logger.info("Outbox consumer started")
+
+    async def _send_outbox_message(self, msg: dict) -> None:
+        """Send a single outbox message via DingTalk API."""
+        from codingagentim.core.models import Message
+
+        text = msg.get("result", "")
+        if not text:
+            return
+
+        sender_id = msg.get("sender_id", "")
+        conversation_id = msg.get("conversation_id", "")
+        is_group = msg.get("is_group", False)
+
+        target_msg = Message(
+            sender_id=sender_id,
+            sender_name="",
+            conversation_id=conversation_id if is_group else "",
+            content="",
+            raw={},
+        )
+
+        await self.provider.reply_message(target_msg, text, msg_type="text")
 
     def start_api(self, model: str = "", system_prompt: str = "") -> None:
         """Start in direct API mode: fastest response using Anthropic SDK."""

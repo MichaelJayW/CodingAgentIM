@@ -294,6 +294,9 @@ def _check_notifications() -> list[dict]:
     return notifications
 
 
+_check_notifications_impl = _check_notifications
+
+
 def _get_bridge_status(log_lines: int = 10) -> dict:
     status: dict[str, Any] = {"running": False, "pid": None, "recent_log": []}
 
