@@ -23,6 +23,10 @@ class Message(BaseModel):
     msg_type: MessageType = MessageType.TEXT
     timestamp: datetime | None = None
     raw: dict = Field(default_factory=dict)
+    image_paths: list[str] = Field(default_factory=list)
+    file_paths: list[str] = Field(default_factory=list)
+    audio_path: str = ""
+    audio_recognition: str = ""
 
 
 class Contact(BaseModel):

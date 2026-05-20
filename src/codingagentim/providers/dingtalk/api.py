@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -10,6 +11,10 @@ from codingagentim.providers.dingtalk.auth import get_access_token, invalidate_t
 
 BASE_URL = "https://api.dingtalk.com"
 OLD_BASE_URL = "https://oapi.dingtalk.com"
+
+logger = logging.getLogger(__name__)
+
+MAX_MEDIA_BYTES = 25 * 1024 * 1024  # 25 MiB
 
 
 class DingTalkAPI:
@@ -74,3 +79,56 @@ class DingTalkAPI:
 
     async def post(self, path: str, **kwargs) -> dict[str, Any]:
         return await self.request("POST", path, **kwargs)
+
+    async def download_media(self, download_code: str, robot_code: str) -> tuple[bytes, str]:
+        """Download a media file (image/audio/file) via DingTalk messageFiles/download API.
+
+        Returns (data_bytes, content_type).
+        """
+        token = await self._get_token()
+        client = self._get_client()
+
+        resp = await client.post(
+            f"{BASE_URL}/v1.0/robot/messageFiles/download",
+            headers={
+                "x-acs-dingtalk-access-token": token,
+                "Content-Type": "application/json",
+            },
+            json={"downloadCode": download_code, "robotCode": robot_code},
+        )
+        resp.raise_for_status()
+        download_url = resp.json().get("downloadUrl", "")
+        if not download_url:
+            raise ValueError("Empty downloadUrl in response")
+
+        media_resp = await client.get(download_url)
+        media_resp.raise_for_status()
+        data = media_resp.content
+        if len(data) > MAX_MEDIA_BYTES:
+            raise ValueError(f"Media too large: {len(data)} bytes (limit {MAX_MEDIA_BYTES})")
+        content_type = media_resp.headers.get("content-type", "application/octet-stream")
+        logger.debug("Media downloaded: %d bytes, type=%s", len(data), content_type)
+        return data, content_type
+
+    async def upload_media(self, data: bytes, filename: str, media_type: str = "image") -> str:
+        """Upload media to DingTalk and return media_id.
+
+        media_type: "image", "voice", or "file".
+        """
+        token = await self._get_token()
+        client = self._get_client()
+
+        url = f"{OLD_BASE_URL}/media/upload?access_token={token}&type={media_type}"
+        resp = await client.post(
+            url,
+            files={"media": (filename, data)},
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("errcode", 0) != 0:
+            raise ValueError(f"Upload failed: {result.get('errmsg', 'unknown error')}")
+        media_id = result.get("media_id", "")
+        if not media_id:
+            raise ValueError(f"Empty media_id in upload response: {result}")
+        logger.debug("Media uploaded: media_id=%s, type=%s, size=%d", media_id, media_type, len(data))
+        return media_id

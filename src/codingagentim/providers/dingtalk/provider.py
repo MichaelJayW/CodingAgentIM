@@ -88,6 +88,22 @@ class DingTalkProvider(BaseProvider):
                 last_result = await self.send_to_user([original.sender_id], chunk, msg_type)
         return last_result
 
+    async def send_image_to_user(
+        self, user_ids: list[str], image_data: bytes, filename: str = "image.png"
+    ) -> Message:
+        return await self._chat.send_image_to_user(
+            user_ids=user_ids, image_data=image_data,
+            filename=filename, robot_code=self._robot_code,
+        )
+
+    async def send_file_to_user(
+        self, user_ids: list[str], file_data: bytes, filename: str = "file"
+    ) -> Message:
+        return await self._chat.send_file_to_user(
+            user_ids=user_ids, file_data=file_data,
+            filename=filename, robot_code=self._robot_code,
+        )
+
     async def search_contact(self, query: str, limit: int = 10) -> list[Contact]:
         return await self._contact.search(query, limit)
 

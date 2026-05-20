@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import os
 import shutil
 import time
 from collections import OrderedDict
@@ -91,9 +92,37 @@ def save_conversations(conversations: dict[str, list[dict]]) -> None:
     _CONVERSATIONS_FILE.write_text(_json.dumps(conversations, ensure_ascii=False))
 
 
+_ATTACHMENTS_DIR = Path.home() / ".codingagentim" / "attachments"
 _NOTIF_FILE = Path.home() / ".codingagentim" / "notifications.jsonl"
 _NOTIF_MAX_SIZE = 512 * 1024  # 512 KB — rotate when exceeded
 _NOTIF_KEEP_LINES = 200       # keep last N lines after rotation
+
+
+def _mime_to_ext(content_type: str) -> str:
+    mapping = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+        "image/webp": ".webp", "image/bmp": ".bmp",
+        "audio/amr": ".amr", "audio/ogg": ".ogg", "audio/mp4": ".m4a",
+        "audio/mpeg": ".mp3", "audio/wav": ".wav",
+        "application/pdf": ".pdf",
+    }
+    return mapping.get(content_type.split(";")[0].strip().lower(), "")
+
+
+def save_attachment(data: bytes, filename: str, content_type: str = "") -> str:
+    """Save attachment bytes to ~/.codingagentim/attachments/ and return the full path."""
+    _ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    base = os.path.basename(filename.replace("\\", "/")) if filename else ""
+    if not base or base in (".", ".."):
+        ext = _mime_to_ext(content_type) if content_type else ""
+        base = f"attachment_{int(time.time() * 1000)}{ext}"
+    path = _ATTACHMENTS_DIR / base
+    if path.exists():
+        stem, suffix = path.stem, path.suffix
+        path = _ATTACHMENTS_DIR / f"{stem}_{int(time.time() * 1000)}{suffix}"
+    path.write_bytes(data)
+    logger.debug("Attachment saved: %s (%d bytes)", path, len(data))
+    return str(path)
 
 
 def _rotate_notifications() -> None:
@@ -117,9 +146,11 @@ def _rotate_notifications() -> None:
 def push_notification(
     sender: str, text: str, ntype: str = "received", chat: str = "",
     result: str = "", sender_id: str = "",
+    image_paths: list[str] | None = None,
+    audio_path: str = "",
 ) -> None:
     from datetime import datetime, timezone
-    data = {
+    data: dict = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "sender": sender,
         "text": text[:100],
@@ -130,6 +161,10 @@ def push_notification(
         data["sender_id"] = sender_id
     if result:
         data["result"] = result[:200]
+    if image_paths:
+        data["image_paths"] = image_paths
+    if audio_path:
+        data["audio_path"] = audio_path
     entry = _json.dumps(data, ensure_ascii=False)
     try:
         _NOTIF_FILE.parent.mkdir(parents=True, exist_ok=True)

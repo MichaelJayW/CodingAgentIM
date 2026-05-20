@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from typing import TYPE_CHECKING
 
 import dingtalk_stream
@@ -14,6 +15,7 @@ from codingagentim.providers.dingtalk.handlers.base import (
     console,
     logger,
     push_notification,
+    save_attachment,
 )
 
 if TYPE_CHECKING:
@@ -35,10 +37,6 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
         incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
         if self._is_duplicate(incoming.message_id):
             return AckMessage.STATUS_OK, "OK"
-        text = (incoming.text.content or "").strip()
-
-        if not text:
-            return AckMessage.STATUS_OK, "OK"
 
         sender = incoming.sender_nick or ""
         sender_id = incoming.sender_staff_id or incoming.sender_id or ""
@@ -46,15 +44,22 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
         is_group = incoming.conversation_type == "2"
         chat_type = "群聊" if is_group else "单聊"
 
+        text, image_paths, audio_path = await self._extract_content(incoming, callback.data)
+
+        if not text and not image_paths and not audio_path:
+            return AckMessage.STATUS_OK, "OK"
+
         msg = Message(
             sender_id=sender_id,
             sender_name=sender,
             conversation_id=conversation_id if is_group else "",
             content=text,
             raw=callback.data,
+            image_paths=image_paths,
+            audio_path=audio_path,
         )
 
-        if text.lower() in _LEVEL_COMMANDS or text in _LEVEL_COMMANDS:
+        if text and (text.lower() in _LEVEL_COMMANDS or text in _LEVEL_COMMANDS):
             level = _LEVEL_COMMANDS.get(text.lower()) or _LEVEL_COMMANDS[text]
             from codingagentim.config import set_reply_level
             set_reply_level(level)
@@ -68,8 +73,9 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
             logger.info("Reply level changed to %s by %s", level, sender)
             return AckMessage.STATUS_OK, "OK"
 
-        console.print(f"\n[bold cyan]━━━ 收到消息[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {text[:80]}")
-        logger.info("Inbox: %s from %s: %s", chat_type, sender, text[:100])
+        desc = text[:80] if text else (f"[图片x{len(image_paths)}]" if image_paths else "[语音]")
+        console.print(f"\n[bold cyan]━━━ 收到消息[/bold cyan]({chat_type}) from [bold]{sender}[/bold]: {desc}")
+        logger.info("Inbox: %s from %s: %s", chat_type, sender, desc)
 
         push_inbox(
             text=text,
@@ -77,10 +83,13 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
             sender_id=sender_id,
             conversation_id=conversation_id,
             is_group=is_group,
+            image_paths=image_paths or None,
+            audio_path=audio_path,
         )
 
         push_notification(
-            sender, text, ntype="received", chat=chat_type, sender_id=sender_id,
+            sender, text or desc, ntype="received", chat=chat_type, sender_id=sender_id,
+            image_paths=image_paths or None, audio_path=audio_path,
         )
 
         from codingagentim.config import get_reply_level
@@ -95,3 +104,63 @@ class InboxMessageHandler(DeduplicatedHandler, dingtalk_stream.ChatbotHandler):
 
         console.print(f"[bold green]━━━ 已入队[/bold green]")
         return AckMessage.STATUS_OK, "OK"
+
+    async def _extract_content(
+        self, incoming: dingtalk_stream.ChatbotMessage, raw_data: dict,
+    ) -> tuple[str, list[str], str]:
+        """Extract text, image paths, and audio path from an incoming message.
+
+        Returns (text, image_paths, audio_path).
+        """
+        msgtype = incoming.message_type or "text"
+        text = ""
+        image_paths: list[str] = []
+        audio_path = ""
+        robot_code = incoming.robot_code or self.provider._robot_code
+
+        if msgtype == "text":
+            text = (incoming.text.content or "").strip() if incoming.text else ""
+
+        elif msgtype == "picture":
+            download_codes = incoming.get_image_list() or []
+            for i, code in enumerate(download_codes):
+                try:
+                    data, ct = await self.provider._api.download_media(code, robot_code)
+                    path = save_attachment(data, f"image_{i}.png", ct)
+                    image_paths.append(path)
+                except Exception as e:
+                    logger.warning("Failed to download image: %s", e)
+
+        elif msgtype == "richText":
+            text_parts = incoming.get_text_list() or []
+            text = "\n".join(t for t in text_parts if t)
+            download_codes = incoming.get_image_list() or []
+            for i, code in enumerate(download_codes):
+                try:
+                    data, ct = await self.provider._api.download_media(code, robot_code)
+                    path = save_attachment(data, f"richtext_image_{i}.png", ct)
+                    image_paths.append(path)
+                except Exception as e:
+                    logger.warning("Failed to download richText image: %s", e)
+
+        elif msgtype == "audio":
+            content_data = raw_data.get("content", {})
+            if isinstance(content_data, dict):
+                download_code = content_data.get("downloadCode", "")
+                recognition = content_data.get("recognition", "")
+                if download_code:
+                    try:
+                        data, ct = await self.provider._api.download_media(download_code, robot_code)
+                        audio_path = save_attachment(data, "voice.amr", ct)
+                    except Exception as e:
+                        logger.warning("Failed to download audio: %s", e)
+                text = recognition or ""
+                if not text and not audio_path:
+                    text = "[语音消息，无法识别]"
+
+        else:
+            text = (incoming.text.content or "").strip() if incoming.text else ""
+            if not text:
+                logger.debug("Unhandled message type: %s", msgtype)
+
+        return text, image_paths, audio_path

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json as _json
+
 from codingagentim.core.models import Message
 from codingagentim.providers.dingtalk.api import DingTalkAPI
 
@@ -25,8 +27,8 @@ class ChatService:
         body = {
             "robotCode": robot_code,
             "openConversationId": conversation_id,
-            "msgKey": f"sampleMarkdown" if msg_type == "markdown" else "sampleText",
-            "msgParam": __import__("json").dumps(msg_param, ensure_ascii=False),
+            "msgKey": "sampleMarkdown" if msg_type == "markdown" else "sampleText",
+            "msgParam": _json.dumps(msg_param, ensure_ascii=False),
         }
 
         result = await self._api.post(
@@ -58,7 +60,7 @@ class ChatService:
             "robotCode": robot_code,
             "userIds": user_ids,
             "msgKey": "sampleMarkdown" if msg_type == "markdown" else "sampleText",
-            "msgParam": __import__("json").dumps(msg_param, ensure_ascii=False),
+            "msgParam": _json.dumps(msg_param, ensure_ascii=False),
         }
 
         result = await self._api.post(
@@ -72,3 +74,38 @@ class ChatService:
             msg_type=msg_type,
             raw=result,
         )
+
+    async def send_image_to_user(
+        self,
+        user_ids: list[str],
+        image_data: bytes,
+        filename: str = "image.png",
+        robot_code: str = "",
+    ) -> Message:
+        media_id = await self._api.upload_media(image_data, filename, "image")
+        body = {
+            "robotCode": robot_code,
+            "userIds": user_ids,
+            "msgKey": "sampleImageMsg",
+            "msgParam": _json.dumps({"photoURL": media_id}),
+        }
+        result = await self._api.post("/v1.0/robot/oToMessages/batchSend", json=body)
+        return Message(id=result.get("processQueryKey", ""), content=f"[image:{media_id}]", raw=result)
+
+    async def send_file_to_user(
+        self,
+        user_ids: list[str],
+        file_data: bytes,
+        filename: str = "file",
+        robot_code: str = "",
+    ) -> Message:
+        media_id = await self._api.upload_media(file_data, filename, "file")
+        ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+        body = {
+            "robotCode": robot_code,
+            "userIds": user_ids,
+            "msgKey": "sampleFile",
+            "msgParam": _json.dumps({"mediaId": media_id, "fileName": filename, "fileType": ext}),
+        }
+        result = await self._api.post("/v1.0/robot/oToMessages/batchSend", json=body)
+        return Message(id=result.get("processQueryKey", ""), content=f"[file:{filename}]", raw=result)

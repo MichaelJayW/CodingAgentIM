@@ -35,9 +35,12 @@ def push_inbox(
     sender_id: str = "",
     conversation_id: str = "",
     is_group: bool = True,
+    image_paths: list[str] | None = None,
+    file_paths: list[str] | None = None,
+    audio_path: str = "",
 ) -> dict:
     items = _load(INBOX_FILE)
-    msg = {
+    msg: dict = {
         "id": uuid.uuid4().hex[:8],
         "text": text,
         "sender": sender,
@@ -47,6 +50,12 @@ def push_inbox(
         "status": "pending",
         "timestamp": datetime.now().isoformat(),
     }
+    if image_paths:
+        msg["image_paths"] = image_paths
+    if file_paths:
+        msg["file_paths"] = file_paths
+    if audio_path:
+        msg["audio_path"] = audio_path
     items.append(msg)
     _save(INBOX_FILE, items)
     return msg

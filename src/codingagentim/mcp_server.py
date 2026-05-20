@@ -231,6 +231,47 @@ def _get_tools() -> list[dict]:
                 "required": ["sender_id", "content"],
             },
         },
+        {
+            "name": "reply_image",
+            "description": (
+                "发送图片给钉钉用户。支持本地文件路径。"
+                "用于发送截图、生成的图片等给发消息的用户。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sender_id": {
+                        "type": "string",
+                        "description": "用户 ID（从 check_notifications 返回的 sender_id 字段获取）",
+                    },
+                    "image_path": {
+                        "type": "string",
+                        "description": "本地图片文件路径",
+                    },
+                },
+                "required": ["sender_id", "image_path"],
+            },
+        },
+        {
+            "name": "reply_file",
+            "description": (
+                "发送文件给钉钉用户。支持本地文件路径。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sender_id": {
+                        "type": "string",
+                        "description": "用户 ID（从 check_notifications 返回的 sender_id 字段获取）",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "本地文件路径",
+                    },
+                },
+                "required": ["sender_id", "file_path"],
+            },
+        },
     ]
 
 
@@ -387,38 +428,67 @@ async def _call_tool(name: str, arguments: dict) -> Any:
         )
         return result.model_dump(mode="json")
 
+    if name == "reply_image":
+        image_path = arguments["image_path"]
+        image_file = Path(image_path)
+        if not image_file.exists():
+            return {"error": f"File not found: {image_path}"}
+        image_data = image_file.read_bytes()
+        result = await provider.send_image_to_user(
+            user_ids=[arguments["sender_id"]],
+            image_data=image_data,
+            filename=image_file.name,
+        )
+        return result.model_dump(mode="json")
+
+    if name == "reply_file":
+        file_path = arguments["file_path"]
+        local_file = Path(file_path)
+        if not local_file.exists():
+            return {"error": f"File not found: {file_path}"}
+        file_data = local_file.read_bytes()
+        result = await provider.send_file_to_user(
+            user_ids=[arguments["sender_id"]],
+            file_data=file_data,
+            filename=local_file.name,
+        )
+        return result.model_dump(mode="json")
+
     return {"error": f"Unknown tool: {name}"}
 
 
 async def serve_stdio() -> None:
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin)
+    loop = asyncio.get_event_loop()
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
 
-    transport, _ = await asyncio.get_event_loop().connect_write_pipe(
-        asyncio.Protocol, sys.stdout
-    )
+    def _read_message() -> bytes | None:
+        header = b""
+        while True:
+            line = stdin.readline()
+            if not line:
+                return None
+            if line == b"\r\n" or line == b"\n":
+                break
+            header += line
+
+        content_length = 0
+        for h in header.decode().split("\r\n"):
+            if h.lower().startswith("content-length:"):
+                content_length = int(h.split(":")[1].strip())
+
+        if content_length == 0:
+            return b""
+        return stdin.read(content_length)
 
     while True:
         try:
-            header = b""
-            while True:
-                line = await reader.readline()
-                if line == b"\r\n" or line == b"\n":
-                    break
-                header += line
-                if not line:
-                    return
-
-            content_length = 0
-            for h in header.decode().split("\r\n"):
-                if h.lower().startswith("content-length:"):
-                    content_length = int(h.split(":")[1].strip())
-
-            if content_length == 0:
+            body = await loop.run_in_executor(None, _read_message)
+            if body is None:
+                break
+            if not body:
                 continue
 
-            body = await reader.readexactly(content_length)
             request = json.loads(body.decode())
             response = await handle_request(request)
 
@@ -427,9 +497,10 @@ async def serve_stdio() -> None:
 
             response_bytes = json.dumps(response).encode()
             message = f"Content-Length: {len(response_bytes)}\r\n\r\n".encode() + response_bytes
-            transport.write(message)
+            stdout.write(message)
+            stdout.flush()
 
-        except (asyncio.IncompleteReadError, ConnectionError):
+        except (ConnectionError, OSError):
             break
         except Exception as e:
             sys.stderr.write(f"MCP server error: {e}\n")
