@@ -1,67 +1,103 @@
-"""Tests for MCP server request handling."""
+"""Tests for MCP server tool functions."""
+
+import json
+from unittest.mock import patch
 
 import pytest
 
-from codingagentim.mcp_server import _get_tools, handle_request
+from codingagentim.mcp_server import (
+    _check_notifications_impl,
+    _get_bridge_status_impl,
+    check_notifications,
+    get_bridge_status,
+    get_reply_level,
+    mcp,
+    poll_notifications,
+)
 
 
-@pytest.mark.asyncio
-async def test_initialize():
-    resp = await handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-    assert resp["id"] == 1
-    assert resp["result"]["serverInfo"]["name"] == "codingagentim"
-    assert "protocolVersion" in resp["result"]
-
-
-@pytest.mark.asyncio
-async def test_notifications_initialized_returns_none():
-    resp = await handle_request(
-        {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    )
-    assert resp is None
-
-
-@pytest.mark.asyncio
-async def test_tools_list():
-    resp = await handle_request(
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
-    )
-    tools = resp["result"]["tools"]
-    tool_names = [t["name"] for t in tools]
+def test_mcp_server_has_all_tools():
+    tool_names = [t.name for t in mcp._tool_manager._tools.values()]
+    assert "check_notifications" in tool_names
+    assert "poll_notifications" in tool_names
+    assert "get_reply_level" in tool_names
+    assert "set_reply_level" in tool_names
+    assert "get_bridge_status" in tool_names
     assert "dingtalk_send_message" in tool_names
     assert "dingtalk_search_contact" in tool_names
     assert "dingtalk_create_todo" in tool_names
     assert "dingtalk_list_calendar" in tool_names
+    assert "reply_dingtalk" in tool_names
+    assert "reply_image" in tool_names
+    assert "reply_file" in tool_names
+    assert len(tool_names) == 12
 
 
 @pytest.mark.asyncio
-async def test_unknown_method():
-    resp = await handle_request(
-        {"jsonrpc": "2.0", "id": 3, "method": "nonexistent/method"}
-    )
-    assert "error" in resp
-    assert resp["error"]["code"] == -32601
-
-
-def test_get_tools_schema_valid():
-    tools = _get_tools()
-    assert len(tools) >= 7
-    for tool in tools:
-        assert "name" in tool
-        assert "description" in tool
-        assert "inputSchema" in tool
-        assert tool["inputSchema"]["type"] == "object"
+async def test_check_notifications_empty(tmp_path):
+    with patch("codingagentim.mcp_server._NOTIF_FILE", tmp_path / "notif.jsonl"):
+        result = await check_notifications()
+        assert json.loads(result) == []
 
 
 @pytest.mark.asyncio
-async def test_tools_call_unknown_tool():
-    resp = await handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {"name": "nonexistent_tool", "arguments": {}},
-        }
-    )
-    content = resp["result"]["content"][0]["text"]
-    assert "Unknown tool" in content
+async def test_check_notifications_with_data(tmp_path):
+    notif_file = tmp_path / "notif.jsonl"
+    offset_file = tmp_path / ".offset"
+    notif_file.write_text('{"type":"received","sender":"test","text":"hello"}\n')
+
+    with (
+        patch("codingagentim.mcp_server._NOTIF_FILE", notif_file),
+        patch("codingagentim.mcp_server._OFFSET_FILE", offset_file),
+    ):
+        result = await check_notifications()
+        parsed = json.loads(result)
+        assert len(parsed) == 1
+        assert parsed[0]["sender"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_poll_notifications_timeout(tmp_path):
+    with patch("codingagentim.mcp_server._NOTIF_FILE", tmp_path / "notif.jsonl"):
+        result = await poll_notifications(timeout=1, interval=1)
+        assert json.loads(result) == []
+
+
+@pytest.mark.asyncio
+async def test_get_reply_level():
+    with patch("codingagentim.config.get_reply_level", return_value="normal"):
+        result = await get_reply_level()
+        assert json.loads(result) == {"level": "normal"}
+
+
+@pytest.mark.asyncio
+async def test_get_bridge_status():
+    with patch("codingagentim.mcp_server._get_bridge_status_impl", return_value={"running": False, "pid": None, "recent_log": []}):
+        result = await get_bridge_status(log_lines=5)
+        parsed = json.loads(result)
+        assert parsed["running"] is False
+
+
+def test_check_notifications_impl_no_file(tmp_path):
+    with patch("codingagentim.mcp_server._NOTIF_FILE", tmp_path / "missing.jsonl"):
+        assert _check_notifications_impl() == []
+
+
+def test_check_notifications_impl_tracks_offset(tmp_path):
+    notif_file = tmp_path / "notif.jsonl"
+    offset_file = tmp_path / ".offset"
+    notif_file.write_text('{"type":"received","text":"msg1"}\n{"type":"received","text":"msg2"}\n')
+
+    with (
+        patch("codingagentim.mcp_server._NOTIF_FILE", notif_file),
+        patch("codingagentim.mcp_server._OFFSET_FILE", offset_file),
+    ):
+        result = _check_notifications_impl()
+        assert len(result) == 2
+
+        result2 = _check_notifications_impl()
+        assert result2 == []
+
+
+def test_mcp_server_name():
+    assert mcp.name == "codingagentim"
