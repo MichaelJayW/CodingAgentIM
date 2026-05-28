@@ -17,12 +17,11 @@ CLAUDE_MD_TEMPLATE = """\
 
 ## 钉钉 Bridge 通知
 
-**每次会话启动时**，设置一个每分钟执行的 cron 任务来同步钉钉 bridge 活动到任务列表：
+通知通过两种方式送达，**无需设置 cron 任务**：
+1. **UserPromptSubmit Hook**（已注册）— 每次你提交 prompt 时自动检查未读通知并注入上下文
+2. **Bridge Daemon**（已安装）— 钉钉有新消息时通过 `claude --resume` 主动唤醒会话处理
 
-Cron prompt:
-```
-调用 check_notifications MCP tool 检查钉钉新通知。如果返回非空列表，对每条记录：type=received 的创建 in_progress 任务（格式"钉钉: sender「text」"），type=completed 的找到对应任务标记完成并在描述中附上 result 摘要，type=failed 的找到对应任务添加失败备注。空列表则静默不输出。
-```
+收到通知后的处理规则：type=received 的创建 in_progress 任务（格式"钉钉: sender「text」"），type=completed 的找到对应任务标记完成并在描述中附上 result 摘要，type=failed 的找到对应任务添加失败备注。
 
 ## Bridge 守护进程
 
